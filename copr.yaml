@@ -1,0 +1,39 @@
+#
+# An optionnal boolean for debugging (default: false). If true, backtraces for all
+# errors are shown in the error log.
+#
+# debug: false
+
+#
+# If you use a secret with your GitHub webhook (highly recommended), the this proxy
+# can validate each request against that secret. In that case, specify the secret here.
+#
+secret: VeryConfidential
+
+#
+# An optional boolean, specifying the behavior of the validation mechanism:
+# If true (the default), validation is mandatory and fails, if no secret is set on either side
+# (GitHub or here). Otherwise, validation is optional and happens only if the secret is set above.
+#
+# strict: true
+
+#
+# copr_url_2 adn copr_url_3 specify the COPR URL template. At the time of
+# this writing, the 3 parameter variant looks like this:
+#
+# https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid}/{pkgname}/
+#
+# and the 2 parameter variant looks like this:
+#
+# https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid}/
+#
+copr_url_2: 'https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid}/'
+
+copr_url_3: 'https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid}/{pkgname}/'
+
+#
+# The patterns (shell glob style) against to check all changes (modified, added and deleted)
+# If any pattern matches, the request gets forwarded to the above urls. otherwise it will be
+# silently ignored.
+patterns:
+  - '*.md'

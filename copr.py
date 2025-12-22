@@ -3,130 +3,267 @@
 import fnmatch
 import json
 import re
+import traceback
 from urllib.parse import parse_qs
-from urllib.request import getproxies
 from uuid import UUID
+import hashlib
+import hmac
+from http.client import responses
 import requests
+from yaml import safe_load
 
-COPR_URL = 'https://copr.fedorainfracloud.org/webhooks/github/{0}/{1}/{2}/'
+class ProxyError(BaseException):
+    """ A simple error class. """
 
-def forbidden(msg, start_response):
-    """ Generate a 403 error. Log msg to log only. """
-    print(f'403: {msg}', file=globals()['err'])
-    start_response('403 Forbidden', [])
-    return []
+    def __init__(self, code, reason=''):
+        self.code = code
+        self.reason = reason
 
-def bad(msg, start_response):
-    """ Generate a 400 error. """
-    print(f'400: {msg}', file=globals()['err'])
-    start_response('400 Bad Request', [])
-    return [msg.encode('utf-8')]
+    def __str__(self):
+        """ Return standard code and statustext """
+        return f'{self.code} {responses[self.code]}'
 
-def uuid_valid(val):
-    """ Validate UUID. """
-    try:
-        return str(UUID(str(val))) == str(val)
-    except ValueError:
-        return False
+    def statustext(self):
+        """ Return statustext """
+        return responses[self.code]
 
-def lmatch(pattern, slist):
-    """ Invoke fnmatch on a list of strings.  """
-    if slist is None:
-        return False
-    for s in slist:
-        if fnmatch.fnmatch(s, pattern):
+class CoprProxy:
+    """ A simple reverse proxy for COPR using WSGI. """
+
+    def __init__(self, env, start_response):
+        """ init our environment. """
+        self.env = env
+        self.start_response = start_response
+        self.err = env['wsgi.errors']
+        config = env.get('config')
+        if config is None:
+            raise ProxyError(503, 'config not specified')
+        try:
+            with open(config, 'r', encoding='utf-8') as f:
+                self.cfg  = safe_load(f)
+        except (ValueError, OSError) as ex:
+            raise ProxyError(503, f'Unable to read config from {config}') from ex
+
+    def debug(self):
+        """ Return the configured debug flag """
+        ret = self.cfg.get('debug')
+        if ret is None:
+            return False
+        return ret
+
+    def strict(self):
+        """ Return the configured strict flag """
+        ret = self.cfg.get('strict')
+        if ret is None:
             return True
-    return False
+        return ret
+
+    def secret(self):
+        """ Return the configured secret """
+        ret = self.cfg.get('secret')
+        if ret is None and self.strict():
+            raise ProxyError(503, 'Strict validation enabled, but no secret configured locally')
+        return ret
+
+    def patterns(self):
+        """ Return the configured patterns """
+        ret = self.cfg.get('patterns')
+        if ret is None:
+            return ret
+        if isinstance(ret, str):
+            return [ret]
+        if isinstance(ret, (list, tuple)):
+            return ret
+        raise ProxyError(503, 'Invalid type of patterns. Must be a str, a list or a tuple')
+
+    def proxies(self):
+        """ fetch proxies from environment. """
+        ret = {}
+        for scheme in ['http', 'https']:
+            value = self.env.get(f'{scheme}_proxy')
+            if value is not None:
+                ret[scheme] = value
+        return ret
+
+    def checkuuid(self, uuid):
+        """ Validate UUID. """
+        if uuid is None:
+            raise ProxyError(400, 'Missing uuid')
+        try:
+            tuuid = str(UUID(uuid)).lower()
+        except ValueError as ex:
+            raise ProxyError(400, 'Invalid UUID') from ex
+        if tuuid != uuid.lower():
+            raise ProxyError(400, 'Invalid UUID')
+
+    def lmatch(self, pattern, slist):
+        """ Invoke fnmatch on a list of strings.  """
+        if slist is None:
+            return False
+        for s in slist:
+            if fnmatch.fnmatch(s, pattern):
+                return True
+        return False
+
+    def sigvalidate(self):
+        """Verify that the payload was sent from GitHub by validating SHA256.
+
+        Signature is provided by github in a Header like this:
+
+        X-Hub-Signature-256: sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17
+
+        Returns body, if secret is None or has vas validated successfully,
+
+        See: https://docs.github.com/en/webhooks/webhook-events-and-payloads#delivery-headers
+        """
+        body = self.env['wsgi.input'].read(self.contentlen()).decode('utf-8')
+        secret = self.secret()
+        if secret is None:
+            return body
+        sig = self.env.get('HTTP_X_HUB_SIGNATURE_256')
+        if sig is None:
+            raise ProxyError(403, 'Signature missing')
+        hobj = hmac.new(secret.encode('utf-8'), msg=body.encode('utf-8'), digestmod=hashlib.sha256)
+        expected = 'sha256=' + hobj.hexdigest()
+        if hmac.compare_digest(expected, sig):
+            return body
+        raise ProxyError(403, 'Signature validation failed')
+
+    def contentlen(self):
+        """ Get content length """
+        clen = self.env.get('CONTENT_LENGTH', '0')
+        if not re.match(r'[0-9]+$', clen):
+            raise ProxyError(400, 'Invalid Content-Length')
+        if int(clen) > 20971520:
+            raise ProxyError(413, 'Invalid Content-Length')
+        return int(clen)
+
+    def urlparams(self):
+        """ Handle URL parameters """
+        try:
+            qparams =  parse_qs(self.env['QUERY_STRING'], strict_parsing=True, max_num_fields=3)
+            proj = qparams.get('proj')
+            if proj is None:
+                raise ProxyError(400, 'Missing or empty proj')
+            proj = proj[0]
+            if not re.match('^[0-9]+$', proj):
+                raise ProxyError(400, 'Invalid proj')
+            uuid = qparams.get('uuid')
+            if uuid is not None:
+                uuid = uuid[0]
+            self.checkuuid(uuid)
+            pkg = qparams.get('pkg')
+            if pkg is not None:
+                pkg = pkg[0]
+        except ValueError as ex:
+            raise ProxyError(400, 'Too many query parameters') from ex
+
+        return {'proj': proj, 'uuid': uuid, 'pkg': pkg}
+
+    def pathmatch(self, obj):
+        """ Handle path matching """
+        patterns = self.patterns()
+        if patterns is None:
+            return True
+        if 'commits' in obj:
+            candidates = []
+            for c in obj['commits']:
+                candidates += c['added'] + c['modified']
+            for pat in patterns:
+                if self.lmatch(pat, candidates):
+                    return True
+        else:
+            raise ProxyError(400, 'missing commits')
+        return False
+
+    def forward(self, dst, ua, ctype, body):
+        """ Forward request to destination. """
+        hdrs = {}
+        hdrs['User-Agent'] = ua
+        hdrs['Content-Type'] = ctype
+        hdrs['Content-Length'] = self.env['CONTENT_LENGTH']
+        for key in self.env.keys():
+            m = re.search(r'^HTTP_X_GITHUB_(\S+)', key)
+            if m is not None and m.group(1):
+                hk = '-'.join(word.capitalize() for word in m.group(1).split('_'))
+                hdrs[f'X-Github-{hk}'] = self.env[key]
+            m = re.search(r'^HTTP_X_HUB_(\S+)', key)
+            if m is not None and m.group(1):
+                hk = '-'.join(word.capitalize() for word in m.group(1).split('_'))
+                hdrs[f'X-Hub-{hk}'] = self.env[key]
+        try:
+            return requests.post(dst, headers=hdrs, data=body, proxies=self.proxies(),
+                              timeout=10)
+        except requests.Timeout as ex:
+            raise ProxyError(504, ex.args[0]) from ex
+        except (requests.RequestException, requests.TooManyRedirects,
+                requests.JSONDecodeError) as ex:
+            raise ProxyError(500, ex.args[0]) from ex
+
+    def formatdst(self, projectid, uuid, pkgname):
+        """ Format destination URL. """
+        try:
+            if pkgname is None:
+                fmt = self.cfg.get('copr_url_2')
+                if fmt is None:
+                    raise ProxyError(503, 'Missing URL template copr_url_nopkg')
+                return fmt.format(projectid=projectid, uuid=uuid)
+            fmt = self.cfg.get('copr_url_3')
+            if fmt is None:
+                raise ProxyError(503, 'Missing URL template copr_url_pkg')
+            return fmt.format(projectid=projectid, uuid=uuid, pkgname=pkgname)
+        except KeyError as ex:
+            raise ProxyError(503, f'Misconfigured url template. Missing key: {ex}') from ex
+
+    def handle(self):
+        """ Handle one request. """
+
+        ua = self.env.get('HTTP_USER_AGENT')
+        ctype = self.env.get('CONTENT_TYPE')
+        ghe  = self.env.get('HTTP_X_GITHUB_EVENT')
+
+        # Basic sanity checks
+        if ua is None or not re.match(r'GitHub-Hookshot/.+', ua):
+            raise ProxyError(403, 'User-Agent does not match GitHub-Hookshot/')
+        if ctype is None or not ctype == 'application/json':
+            raise ProxyError(403, 'Invalid Content-Type')
+        if ghe is None:
+            raise ProxyError(403, 'Missing X-GitHub-Event')
+
+        if self.env['REQUEST_METHOD'] == 'POST':
+
+            body = self.sigvalidate()
+            if ghe != 'push':
+                raise ProxyError(400, 'Not a push event')
+
+            q = self.urlparams()
+            try:
+                obj = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError) as ex:
+                raise ProxyError(400, 'Invalid JSON') from ex
+
+            if self.pathmatch(obj):
+                dst = self.formatdst(q['proj'], q['uuid'], q['pkg'])
+                print(f'Found pattern in commit, forwarding to {dst}', file=self.err)
+                r = self.forward(dst, ua, ctype, body)
+                self.start_response(f'{r.status_code} {r.reason}', [])
+                return [r.content]
+
+        self.start_response('200 OK', [])
+        return []
 
 def application(env, start_response):
     """ WSGI entrypoint. """
-    err = env['wsgi.errors']
-    globals()['err'] = err
-    meth = env['REQUEST_METHOD']
-    ua = env.get('HTTP_USER_AGENT')
-    ctype = env.get('CONTENT_TYPE')
-    clen = env.get('CONTENT_LENGTH', '0')
-    ghe  = env.get('X_GITHUB_EVENT', '')
-
-    # Basic sanity checks
-    if ua is None or not re.match(r'GitHub-Hookshot/.+', ua):
-        return forbidden('User-Agent does not match GitHub-Hookshot/', start_response)
-    if ctype is None or not ctype == 'application/json':
-        return forbidden('Invalid Content-Type', start_response)
-    if clen is None or not re.match(r'[0-9]+$', clen):
-        return forbidden('Invalid Content-Length', start_response)
-    if ghe == '':
-        return forbidden('Missing X-GitHub-Event', start_response)
-
-    keys = env.keys()
-    if meth == 'POST':
-
-        if ghe != 'push':
-            return bad('Not a push event', start_response)
-
-        try:
-            qparams =  parse_qs(env['QUERY_STRING'], strict_parsing=True, max_num_fields=4)
-            proj = qparams.get('proj', '')
-            if proj == '':
-                return bad('Missing or empty proj', start_response)
-            if not re.match('^[0-9]+$', proj):
-                return bad('Invalid proj', start_response)
-            uuid = qparams.get('uuid', '')
-            if not uuid_valid(uuid):
-                return bad('Invalid uuid', start_response)
-            pkg = qparams.get('pkg', '')
-            pat = qparams.get('pat', '')
-        except ValueError:
-            return bad('Too many query parameters', start_response)
-
-        body = env['wsgi.input'].read(int(clen)).decode('utf-8')
-        try:
-            obj = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return bad('Invalid json', start_response)
-
-
-        pat = 'syncstorage-rs.spec'
-
-        found = False
-        if 'commits' in obj:
-            if pat == '':
-                found = True
-            else:
-                for c in obj['commits']:
-                    if lmatch(pat, c['added']) or lmatch(pat, c['modified']):
-                        found = True
-        else:
-            return bad('missing commits', start_response)
-
-        if found:
-            dst = COPR_URL.format(proj, uuid, pkg)
-            if pkg == '':
-                dst = dst[:-1]
-            print(f'Found {pat} in request, forwarding to {dst}', file=err)
-            hdrs = {}
-            hdrs['User-Agent'] = ua
-            hdrs['Content-Type'] = ctype
-            hdrs['Content-Length'] = clen
-            for key in keys:
-                m = re.search(r'^HTTP_X_GITHUB_(\S+)', key)
-                if m is not None and m.group(1):
-                    hk = '-'.join(word.capitalize() for word in m.group(1).split('_'))
-                    hdrs[f'X-Github-{hk}'] = env[key]
-            try:
-                r = requests.post(dst, headers=hdrs, data=body, proxies=getproxies(), timeout=10)
-            except requests.Timeout as ex:
-                print(ex.args[0], file=err)
-                start_response('504 Gateway Timeout', [])
-                return []
-            except (requests.RequestException, requests.TooManyRedirects,
-                    requests.JSONDecodeError) as ex:
-                print(ex.args[0], file=err)
-                start_response('500 Internal server Error', [])
-                return []
-
-            start_response(f'{r.status_code} {r.reason}', [])
-            return [r.content]
-
-    start_response('200 KO', [])
-    return []
+    try:
+        rp = CoprProxy(env, start_response)
+        return rp.handle()
+    except ProxyError as ex:
+        print(f'{ex.code}: {ex.reason}', file=env['wsgi.errors'])
+        if rp.debug():
+            traceback.print_exception(ex, file=env['wsgi.errors'])
+        start_response(str(ex), [])
+        if ex.code in [403, 503]:
+            # For security reasons, do not expose the cause.
+            return []
+        # For other errors, expose the cause.
+        return [str(ex.reason).encode('utf-8')]
