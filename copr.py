@@ -261,7 +261,7 @@ def application(env, start_response):
         print(f'{ex.code}: {ex.reason}', file=env['wsgi.errors'])
         if rp.debug():
             traceback.print_exception(ex, file=env['wsgi.errors'])
-        start_response(str(ex), [])
+        start_response(str(ex), [('Content-Type', 'text/plain; charset=utf-8')])
         if ex.code in [403, 503]:
             # For security reasons, do not expose the cause.
             return []
