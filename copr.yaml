@@ -18,6 +18,12 @@ secret: VeryConfidential
 # strict: true
 
 #
+# An optional boolean, preventing the outgoing delivery to COPR (default: false)
+# If true, everything except the actual delivery to COPR is performed.
+#
+# dryrun: false
+
+#
 # copr_url_2 adn copr_url_3 specify the COPR URL template. At the time of
 # this writing, the 3 parameter variant looks like this:
 #
@@ -34,6 +40,6 @@ copr_url_3: 'https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid
 #
 # The patters (shell glob style) against to check all changes (modified, added and deleted)
 # If any pattern matches, the request gets forwarded to the above urls. otherwise it will be
-# silently ignored.
+# silently ignored. If not specified at all, everything will be forwarded.
 paths:
   - '*.md'

@@ -51,6 +51,13 @@ class CoprProxy:
             return False
         return ret
 
+    def dryrun(self):
+        """ Return the configured dryrun flag """
+        ret = self.cfg.get('dryrun')
+        if ret is None:
+            return False
+        return ret
+
     def strict(self):
         """ Return the configured strict flag """
         ret = self.cfg.get('strict')
@@ -141,7 +148,8 @@ class CoprProxy:
     def urlparams(self):
         """ Handle URL parameters """
         try:
-            qparams =  parse_qs(unquote(self.env['QUERY_STRING']), strict_parsing=True, max_num_fields=3)
+            qparams =  parse_qs(unquote(self.env['QUERY_STRING']), strict_parsing=True,
+                                max_num_fields=3)
             proj = qparams.get('proj')
             if proj is None:
                 raise ProxyError(400, 'Missing or empty proj')
@@ -244,10 +252,13 @@ class CoprProxy:
 
             if self.pathmatch(obj):
                 dst = self.formatdst(q['proj'], q['uuid'], q['pkg'])
-                print(f'Found pattern in commit, forwarding to {dst}', file=self.err)
-                r = self.forward(dst, ua, ctype, body)
-                self.start_response(f'{r.status_code} {r.reason}', [])
-                return [r.content]
+                if self.dryrun():
+                    print(f'Found pattern in commit, would forward to {dst}', file=self.err)
+                else:
+                    print(f'Found pattern in commit, forwarding to {dst}', file=self.err)
+                    r = self.forward(dst, ua, ctype, body)
+                    self.start_response(f'{r.status_code} {r.reason}', [])
+                    return [r.content]
 
         self.start_response('200 OK', [])
         return []

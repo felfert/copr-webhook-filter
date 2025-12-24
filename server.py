@@ -7,7 +7,7 @@ from copr import application as app
 
 def wrapper(env, sresp):
     """ wrapper for initializing environment """
-    env['config'] = 'copr.yaml'
+    env['config'] = 'copr-test.yaml'
     return app(env, sresp)
 
 if __name__ == '__main__':
