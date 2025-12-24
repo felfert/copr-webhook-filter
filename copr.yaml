@@ -36,4 +36,4 @@ copr_url_3: 'https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid
 # If any pattern matches, the request gets forwarded to the above urls. otherwise it will be
 # silently ignored.
 paths:
-  - '*.md
+  - '*.md'

@@ -6,4 +6,6 @@ by affected paths. This project implements a reverse proxy which can filter
 by path patterns. This proxy is using WSGI, so it can be deployed in any
 WSGI-capable server (like `mod_wsgi` for apache). Configuration is done by
 specifying single yaml file using the env variable "config". The actual
-configuration is documented in the example [copr.yaml](copr.yaml).
+configuration of the proxy is documented in the example [copr.yaml](copr.yaml).
+
+On the GitHub side, create a WebHook pointing to your proxy.

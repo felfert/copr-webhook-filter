@@ -4,7 +4,7 @@ import fnmatch
 import json
 import re
 import traceback
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 from uuid import UUID
 import hashlib
 import hmac
@@ -141,7 +141,7 @@ class CoprProxy:
     def urlparams(self):
         """ Handle URL parameters """
         try:
-            qparams =  parse_qs(self.env['QUERY_STRING'], strict_parsing=True, max_num_fields=3)
+            qparams =  parse_qs(unquote(self.env['QUERY_STRING']), strict_parsing=True, max_num_fields=3)
             proj = qparams.get('proj')
             if proj is None:
                 raise ProxyError(400, 'Missing or empty proj')
