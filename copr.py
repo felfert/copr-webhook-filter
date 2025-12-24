@@ -176,7 +176,7 @@ class CoprProxy:
         if 'commits' in obj:
             candidates = []
             for c in obj['commits']:
-                candidates += c['added'] + c['modified']
+                candidates += c['added'] + c['modified'] + c['removed']
             for pat in paths:
                 if self.lmatch(pat, candidates):
                     return True

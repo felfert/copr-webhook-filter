@@ -38,7 +38,7 @@ copr_url_2: 'https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid
 copr_url_3: 'https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid}/{pkgname}/'
 
 #
-# The patters (shell glob style) against to check all changes (modified, added and deleted)
+# The patters (shell glob style) against to check all changes (modified, added and removed)
 # If any pattern matches, the request gets forwarded to the above urls. otherwise it will be
 # silently ignored. If not specified at all, everything will be forwarded.
 paths:
