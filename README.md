@@ -15,3 +15,5 @@ In order to keep the original POST content from GitHub unchanged, these **MUST**
 http://your.proxy.tld/yourHookPath?proj=12345678&uuid=109e265c-a9f2-4e96-a912-1c50bf2ca27c&pkg=mypackage
 
 The project ID and UUID are shown in the Settings page of your COPR project in the `Integrations` tab. The pkg is required only if your project contains multiple packages.
+
+If you want the proxy to validate the origin of incoming requests, you should set a secret for your webhook on GitHub and in the config file for the proxy. This secret is then used to calculate a hash over the request body. Details about that can be found [here](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries).
