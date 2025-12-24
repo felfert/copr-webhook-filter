@@ -65,16 +65,16 @@ class CoprProxy:
             raise ProxyError(503, 'Strict validation enabled, but no secret configured locally')
         return ret
 
-    def patterns(self):
-        """ Return the configured patterns """
-        ret = self.cfg.get('patterns')
+    def paths(self):
+        """ Return the configured paths """
+        ret = self.cfg.get('paths')
         if ret is None:
             return ret
         if isinstance(ret, str):
             return [ret]
         if isinstance(ret, (list, tuple)):
             return ret
-        raise ProxyError(503, 'Invalid type of patterns. Must be a str, a list or a tuple')
+        raise ProxyError(503, 'Invalid type of paths. Must be a str, a list or a tuple')
 
     def proxies(self):
         """ fetch proxies from environment. """
@@ -162,14 +162,14 @@ class CoprProxy:
 
     def pathmatch(self, obj):
         """ Handle path matching """
-        patterns = self.patterns()
-        if patterns is None:
+        paths = self.paths()
+        if paths is None:
             return True
         if 'commits' in obj:
             candidates = []
             for c in obj['commits']:
                 candidates += c['added'] + c['modified']
-            for pat in patterns:
+            for pat in paths:
                 if self.lmatch(pat, candidates):
                     return True
         else:
