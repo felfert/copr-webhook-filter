@@ -104,11 +104,12 @@ class CoprProxy:
             raise ProxyError(400, 'Invalid UUID')
 
     def lmatch(self, pattern, slist):
-        """ Invoke fnmatch on a list of strings.  """
-        if slist is None:
+        """ Match pattern on a list of strings.  """
+        if slist is None or not slist:
             return False
+        cre = re.compile(glob_to_re(pattern))
         for s in slist:
-            if fnmatch.fnmatch(s, pattern):
+            if cre.nmatch(s):
                 return True
         return False
 
@@ -278,3 +279,79 @@ def application(env, start_response):
             return []
         # For other errors, expose the cause.
         return [str(ex.reason).encode('utf-8')]
+
+# pylint: disable=locally-disabled, too-many-nested-blocks, too-many-branches
+def glob_to_re(pat: str) -> str:
+    """Translate a shell PATTERN to a regular expression modified to provide ** matching
+
+    Based on https://stackoverflow.com/a/72400344/5030772
+    Posted by Mathew Wicks, modified by community. See post 'Timeline' for change history
+    Retrieved 2025-12-27, License - CC BY-SA 4.0
+
+    Derived from `fnmatch.translate()` of Python version 3.8.13
+    SOURCE: https://github.com/python/cpython/blob/v3.8.13/Lib/fnmatch.py#L74-L128
+    """
+
+    i, n = 0, len(pat)
+    res = ''
+    while i < n:
+        c = pat[i]
+        i = i+1
+        if c == '*':
+            # -------- CHANGE START --------
+            # prevent '*' matching directory boundaries, but allow '**' to match them
+            j = i
+            if j < n and pat[j] == '*':
+                res = res + '.*'
+                i = j+1
+            else:
+                res = res + '[^/]*'
+            # -------- CHANGE END ----------
+        elif c == '?':
+            # -------- CHANGE START --------
+            # prevent '?' matching directory boundaries
+            res = res + '[^/]'
+            # -------- CHANGE END ----------
+        elif c == '[':
+            j = i
+            if j < n and pat[j] == '!':
+                j = j+1
+            if j < n and pat[j] == ']':
+                j = j+1
+            while j < n and pat[j] != ']':
+                j = j+1
+            if j >= n:
+                res = res + '\\['
+            else:
+                stuff = pat[i:j]
+                if '--' not in stuff:
+                    stuff = stuff.replace('\\', r'\\')
+                else:
+                    chunks = []
+                    k = i+2 if pat[i] == '!' else i+1
+                    while True:
+                        k = pat.find('-', k, j)
+                        if k < 0:
+                            break
+                        chunks.append(pat[i:k])
+                        i = k+1
+                        k = k+3
+                    chunks.append(pat[i:j])
+                    # Escape backslashes and hyphens for set difference (--).
+                    # Hyphens that create ranges shouldn't be escaped.
+                    stuff = '-'.join(s.replace('\\', r'\\').replace('-', r'\-')
+                                     for s in chunks)
+                # Escape set operations (&&, ~~ and ||).
+                stuff = re.sub(r'([&~|])', r'\\\1', stuff)
+                i = j+1
+                if stuff[0] == '!':
+                    # -------- CHANGE START --------
+                    # ensure sequence negations don't match directory boundaries
+                    stuff = '^/' + stuff[1:]
+                    # -------- CHANGE END ----------
+                elif stuff[0] in ('^', '['):
+                    stuff = '\\' + stuff
+                res = f'{res}[{stuff}]'
+        else:
+            res = res + re.escape(c)
+    return fr'(?s:{res})\Z'
