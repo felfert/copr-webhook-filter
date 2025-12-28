@@ -38,8 +38,20 @@ copr_url_2: 'https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid
 copr_url_3: 'https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid}/{pkgname}/'
 
 #
-# The patters (shell glob style) against to check all changes (modified, added and removed)
+# The patters (shell glob style with **) against to check all changes (modified, added and removed)
 # If any pattern matches, the request gets forwarded to the above urls. otherwise it will be
 # silently ignored. If not specified at all, everything will be forwarded.
+#
 paths:
   - '*.md'
+  - 'doc/**/*.md'
+
+# Branches and tags use the same glob style. If paths, branches and tags are combined, they match only, if
+# ALL specified patterns match. For more information about these patterns, see
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#filter-pattern-cheat-sheet
+#
+branches:
+  - 'feature1'
+
+tags:
+  - 'v1*'

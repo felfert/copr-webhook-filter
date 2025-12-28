@@ -1,6 +1,5 @@
 """ WSGI-based  filtering reverse proxy for github push webhooks to COPR. """
 
-import fnmatch
 import json
 import re
 import traceback
@@ -72,16 +71,28 @@ class CoprProxy:
             raise ProxyError(503, 'Strict validation enabled, but no secret configured locally')
         return ret
 
-    def paths(self):
-        """ Return the configured paths """
-        ret = self.cfg.get('paths')
+    def select(self, what):
+        """ Return the configured items """
+        ret = self.cfg.get(what)
         if ret is None:
             return ret
         if isinstance(ret, str):
             return [ret]
         if isinstance(ret, (list, tuple)):
             return ret
-        raise ProxyError(503, 'Invalid type of paths. Must be a str, a list or a tuple')
+        raise ProxyError(503, f'Invalid type of {what}. Must be a str, a list or a tuple')
+
+    def paths(self):
+        """ Return the configured paths """
+        return self.select('paths')
+
+    def branches(self):
+        """ Return the configured branches """
+        return self.select('branches')
+
+    def tags(self):
+        """ Return the configured tags """
+        return self.select('tags')
 
     def proxies(self):
         """ fetch proxies from environment. """
@@ -103,13 +114,25 @@ class CoprProxy:
         if tuuid != uuid.lower():
             raise ProxyError(400, 'Invalid UUID')
 
+    def mpmatch(self, patterns, s):
+        """ Match multiple patterns on a string.  """
+        if patterns is None or not patterns:
+            return True
+        if s is None:
+            return False
+        for pat in patterns:
+            cre = re.compile(glob_to_re(pat))
+            if cre.match(s):
+                return True
+        return False
+
     def lmatch(self, pattern, slist):
         """ Match pattern on a list of strings.  """
         if slist is None or not slist:
             return False
         cre = re.compile(glob_to_re(pattern))
         for s in slist:
-            if cre.nmatch(s):
+            if cre.match(s):
                 return True
         return False
 
@@ -169,6 +192,26 @@ class CoprProxy:
 
         return {'proj': proj, 'uuid': uuid, 'pkg': pkg}
 
+    def branchandtagmatch(self, obj):
+        """ Handle tag and branch matching """
+        tags = self.tags()
+        branches = self.branches()
+        if tags is None and branches is None:
+            return True
+        tag = None
+        branch = None
+        if 'ref' in obj:
+            ref = obj['ref']
+            if ref.startswith('refs/heads/'):
+                branch = re.sub(r'^refs/heads/', '', ref)
+            elif ref.startswith('refs/tags/'):
+                tag = re.sub(r'^refs/tags/', '', ref)
+                ref = obj['base_ref']
+                if ref.startswith('refs/heads/'):
+                    branch = re.sub(r'^refs/heads/', '', ref)
+            return self.mpmatch(tags, tag) and self.mpmatch(branches, branch)
+        raise ProxyError(400, 'missing ref')
+
     def pathmatch(self, obj):
         """ Handle path matching """
         paths = self.paths()
@@ -177,6 +220,9 @@ class CoprProxy:
         if 'commits' in obj:
             candidates = []
             for c in obj['commits']:
+                candidates += c['added'] + c['modified'] + c['removed']
+            if 'head_commit' in obj:
+                c = obj['head_commit']
                 candidates += c['added'] + c['modified'] + c['removed']
             for pat in paths:
                 if self.lmatch(pat, candidates):
@@ -251,7 +297,7 @@ class CoprProxy:
             except (json.JSONDecodeError, UnicodeDecodeError) as ex:
                 raise ProxyError(400, 'Invalid JSON') from ex
 
-            if self.pathmatch(obj):
+            if self.branchandtagmatch(obj) and self.pathmatch(obj):
                 dst = self.formatdst(q['proj'], q['uuid'], q['pkg'])
                 if self.dryrun():
                     print(f'Found pattern in commit, would forward to {dst}', file=self.err)
@@ -280,8 +326,8 @@ def application(env, start_response):
         # For other errors, expose the cause.
         return [str(ex.reason).encode('utf-8')]
 
-# pylint: disable=locally-disabled, too-many-nested-blocks, too-many-branches
 def glob_to_re(pat: str) -> str:
+    # pylint: disable=locally-disabled, too-many-nested-blocks, too-many-branches
     """Translate a shell PATTERN to a regular expression modified to provide ** matching
 
     Based on https://stackoverflow.com/a/72400344/5030772
