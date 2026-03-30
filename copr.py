@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, unquote
 from uuid import UUID
 import hashlib
 import hmac
+import os
 from http.client import responses
 import requests
 from yaml import safe_load
@@ -42,6 +43,44 @@ class CoprProxy:
                 self.cfg  = safe_load(f)
         except (ValueError, OSError) as ex:
             raise ProxyError(503, f'Unable to read config from {config}') from ex
+        pcfgdir = self.cfg.get('projectcfgdir')
+        if pcfgdir is not None:
+            try:
+                if os.path.realpath(pcfgdir, strict=True) != pcfgdir:
+                    raise ProxyError(503, 'Invalid projectcfgdir')
+            except OSError as ex:
+                raise ProxyError(503, 'Unable to use projectcfgdir') from ex
+            try:
+                found = False
+                with os.scandir(pcfgdir) as it:
+                    for e in it:
+                        if not e.name.startswith('.') and e.is_file():
+                            found = True
+                if not found:
+                    delattr(self.cfg, 'projectcfgdir')
+            except OSError as ex:
+                delattr(self.cfg, 'projectcfgdir')
+                raise ProxyError(503, 'Unable to use projectcfgdir') from ex
+
+    def _loadproj(self, proj, uuid):
+        """ Load project config, if it exists """
+        pcfgdir = self.cfg.get('projectcfgdir')
+        if pcfgdir is not None:
+            projcfg = os.path.join(pcfgdir, f'{proj}-{uuid}.yaml')
+            try:
+                if os.path.realpath(projcfg, strict=True) != projcfg:
+                    raise ProxyError(503, 'Invalid proj or uuid')
+            except OSError as ex:
+                raise ProxyError(503, 'Invalid proj or uuid') from ex
+            if os.path.isfile(projcfg):
+                try:
+                    with open(projcfg, 'r', encoding='utf-8') as f:
+                        pcfg  = safe_load(f)
+                    for key in ['secret', 'paths', 'branches', 'tags']:
+                        old = self.cfg.get(key)
+                        self.cfg[key] = pcfg.get(key, old)
+                except (ValueError, OSError) as ex:
+                    raise ProxyError(503, 'Unable to read project config') from ex
 
     def debug(self):
         """ Return the configured debug flag """
@@ -50,28 +89,28 @@ class CoprProxy:
             return False
         return ret
 
-    def dryrun(self):
+    def _dryrun(self):
         """ Return the configured dryrun flag """
         ret = self.cfg.get('dryrun')
         if ret is None:
             return False
         return ret
 
-    def strict(self):
+    def _strict(self):
         """ Return the configured strict flag """
         ret = self.cfg.get('strict')
         if ret is None:
             return True
         return ret
 
-    def secret(self):
+    def _secret(self):
         """ Return the configured secret """
         ret = self.cfg.get('secret')
-        if ret is None and self.strict():
+        if ret is None and self._strict():
             raise ProxyError(503, 'Strict validation enabled, but no secret configured locally')
         return ret
 
-    def select(self, what):
+    def _select(self, what):
         """ Return the configured items """
         ret = self.cfg.get(what)
         if ret is None:
@@ -82,19 +121,19 @@ class CoprProxy:
             return ret
         raise ProxyError(503, f'Invalid type of {what}. Must be a str, a list or a tuple')
 
-    def paths(self):
+    def _paths(self):
         """ Return the configured paths """
-        return self.select('paths')
+        return self._select('paths')
 
-    def branches(self):
+    def _branches(self):
         """ Return the configured branches """
-        return self.select('branches')
+        return self._select('branches')
 
-    def tags(self):
+    def _tags(self):
         """ Return the configured tags """
-        return self.select('tags')
+        return self._select('tags')
 
-    def proxies(self):
+    def _proxies(self):
         """ fetch proxies from environment. """
         ret = {}
         for scheme in ['http', 'https']:
@@ -103,7 +142,7 @@ class CoprProxy:
                 ret[scheme] = value
         return ret
 
-    def checkuuid(self, uuid):
+    def _checkuuid(self, uuid):
         """ Validate UUID. """
         if uuid is None:
             raise ProxyError(400, 'Missing uuid')
@@ -114,7 +153,7 @@ class CoprProxy:
         if tuuid != uuid.lower():
             raise ProxyError(400, 'Invalid UUID')
 
-    def mpmatch(self, patterns, s):
+    def _mpmatch(self, patterns, s):
         """ Match multiple patterns on a string.  """
         if patterns is None or not patterns:
             return True
@@ -126,7 +165,7 @@ class CoprProxy:
                 return True
         return False
 
-    def lmatch(self, pattern, slist):
+    def _lmatch(self, pattern, slist):
         """ Match pattern on a list of strings.  """
         if slist is None or not slist:
             return False
@@ -136,19 +175,19 @@ class CoprProxy:
                 return True
         return False
 
-    def sigvalidate(self):
+    def _sigvalidate(self):
         """Verify that the payload was sent from GitHub by validating SHA256.
 
         Signature is provided by github in a Header like this:
 
         X-Hub-Signature-256: sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17
 
-        Returns body, if secret is None or has vas validated successfully,
+        Returns body, if secret is None or has been validated successfully,
 
         See: https://docs.github.com/en/webhooks/webhook-events-and-payloads#delivery-headers
         """
-        body = self.env['wsgi.input'].read(self.contentlen()).decode('utf-8')
-        secret = self.secret()
+        body = self.env['wsgi.input'].read(self._contentlen()).decode('utf-8')
+        secret = self._secret()
         if secret is None:
             return body
         sig = self.env.get('HTTP_X_HUB_SIGNATURE_256')
@@ -160,7 +199,7 @@ class CoprProxy:
             return body
         raise ProxyError(403, 'Signature validation failed')
 
-    def contentlen(self):
+    def _contentlen(self):
         """ Get content length """
         clen = self.env.get('CONTENT_LENGTH', '0')
         if not re.match(r'[0-9]+$', clen):
@@ -169,7 +208,7 @@ class CoprProxy:
             raise ProxyError(413, 'Invalid Content-Length')
         return int(clen)
 
-    def urlparams(self):
+    def _urlparams(self):
         """ Handle URL parameters """
         try:
             qparams =  parse_qs(unquote(self.env['QUERY_STRING']), strict_parsing=True,
@@ -183,7 +222,10 @@ class CoprProxy:
             uuid = qparams.get('uuid')
             if uuid is not None:
                 uuid = uuid[0]
-            self.checkuuid(uuid)
+            self._checkuuid(uuid)
+            # Now that we have proj and uuid, we can load a project-specifig config,
+            # if it exists.
+            self._loadproj(proj, uuid)
             pkg = qparams.get('pkg')
             if pkg is not None:
                 pkg = pkg[0]
@@ -192,10 +234,10 @@ class CoprProxy:
 
         return {'proj': proj, 'uuid': uuid, 'pkg': pkg}
 
-    def branchandtagmatch(self, obj):
+    def _branchandtagmatch(self, obj):
         """ Handle tag and branch matching """
-        tags = self.tags()
-        branches = self.branches()
+        tags = self._tags()
+        branches = self._branches()
         if tags is None and branches is None:
             return True
         tag = None
@@ -209,12 +251,12 @@ class CoprProxy:
                 ref = obj['base_ref']
                 if ref.startswith('refs/heads/'):
                     branch = re.sub(r'^refs/heads/', '', ref)
-            return self.mpmatch(tags, tag) and self.mpmatch(branches, branch)
+            return self._mpmatch(tags, tag) and self._mpmatch(branches, branch)
         raise ProxyError(400, 'missing ref')
 
-    def pathmatch(self, obj):
+    def _pathmatch(self, obj):
         """ Handle path matching """
-        paths = self.paths()
+        paths = self._paths()
         if paths is None:
             return True
         if 'commits' in obj:
@@ -225,7 +267,7 @@ class CoprProxy:
                 c = obj['head_commit']
                 candidates += c['added'] + c['modified'] + c['removed']
             for pat in paths:
-                if self.lmatch(pat, candidates):
+                if self._lmatch(pat, candidates):
                     return True
         else:
             raise ProxyError(400, 'missing commits')
@@ -247,7 +289,7 @@ class CoprProxy:
                 hk = '-'.join(word.capitalize() for word in m.group(1).split('_'))
                 hdrs[f'X-Hub-{hk}'] = self.env[key]
         try:
-            return requests.post(dst, headers=hdrs, data=body, proxies=self.proxies(),
+            return requests.post(dst, headers=hdrs, data=body, proxies=self._proxies(),
                               timeout=10)
         except requests.Timeout as ex:
             raise ProxyError(504, ex.args[0]) from ex
@@ -287,25 +329,32 @@ class CoprProxy:
 
         if self.env['REQUEST_METHOD'] == 'POST':
 
-            body = self.sigvalidate()
             if ghe != 'push':
                 raise ProxyError(400, 'Not a push event')
 
-            q = self.urlparams()
+            q = self._urlparams()
+            body = self._sigvalidate()
+
             try:
                 obj = json.loads(body)
             except (json.JSONDecodeError, UnicodeDecodeError) as ex:
                 raise ProxyError(400, 'Invalid JSON') from ex
 
-            if self.branchandtagmatch(obj) and self.pathmatch(obj):
+            mbat = self._branchandtagmatch(obj)
+            mpat = self._pathmatch(obj)
+            if mbat and mpat:
                 dst = self.formatdst(q['proj'], q['uuid'], q['pkg'])
-                if self.dryrun():
+                if self._dryrun():
                     print(f'Found pattern in commit, would forward to {dst}', file=self.err)
                 else:
                     print(f'Found pattern in commit, forwarding to {dst}', file=self.err)
                     r = self.forward(dst, ua, ctype, body)
                     self.start_response(f'{r.status_code} {r.reason}', [])
                     return [r.content]
+            else:
+                if self.debug():
+                    pretty = json.dumps(obj, indent=2)
+                    print(f'Unmatched mbat={mbat} mpat={mpat} body=\n{pretty}', file=self.err)
 
         self.start_response('200 OK', [])
         return []

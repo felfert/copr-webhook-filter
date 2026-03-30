@@ -5,12 +5,6 @@
 # debug: false
 
 #
-# If you use a secret with your GitHub webhook (highly recommended), the this proxy
-# can validate each request against that secret. In that case, specify the secret here.
-#
-secret: VeryConfidential
-
-#
 # An optional boolean, specifying the behavior of the validation mechanism:
 # If true (the default), validation is mandatory and fails, if no secret is set on either side
 # (GitHub or here). Otherwise, validation is optional and happens only if the secret is set above.
@@ -36,6 +30,21 @@ secret: VeryConfidential
 copr_url_2: 'https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid}/'
 
 copr_url_3: 'https://copr.fedorainfracloud.org/webhooks/github/{projectid}/{uuid}/{pkgname}/'
+
+#
+# Define a project config directory if you want to override settings below on a per project basis.
+# Project specific configs must be in that directorory and named "{projectid}-{uuid}.yaml"
+# The global settings below are used, if either this is undefined or a specific project config
+# does not exist. All setting in a project config file are optional and the global values
+# apply, if a project config does not specify the values
+#
+# projectcfgdir: /etc/httpd/conf.d/coprprojects
+
+#
+# If you use a secret with your GitHub webhook (highly recommended), then this proxy
+# can validate each request against that secret. In that case, specify the secret here.
+#
+secret: VeryConfidential
 
 #
 # The patters (shell glob style with **) against to check all changes (modified, added and removed)
